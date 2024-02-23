@@ -1,0 +1,260 @@
+apiVersion: sonataflow.org/v1alpha08
+kind: SonataFlow
+metadata:
+  annotations:
+    sonataflow.org/description: Application onboarding demonstrating notifications
+      and timeouts with external service
+    sonataflow.org/expressionLang: jq
+    sonataflow.org/profile: dev
+    sonataflow.org/version: "1.0"
+  creationTimestamp: null
+  labels:
+    app: application-onboarding
+    sonataflow.org/workflow-app: application-onboarding
+  name: application-onboarding
+spec:
+  flow:
+    dataInputSchema:
+      failOnValidationErrors: true
+      schema: schemas/application-onboarding__main-schema.json
+    errors:
+    - code: java.lang.RuntimeException
+      name: Error
+    events:
+    - dataOnly: true
+      kind: consumed
+      name: callbackEvent
+      source: jira.callback
+      type: jira_webhook_callback
+    functions:
+    - name: jiraCreateIssue
+      operation: specs/jira-openapi.json#createIssue
+      type: rest
+    - name: jiraCloseIssue
+      operation: specs/jira-openapi.json#transitionIssue
+      type: rest
+    - name: jiraGetIssueTransitions
+      operation: specs/jira-openapi.json#getIssueTransitions
+      type: rest
+    - name: createNotification
+      operation: specs/notifications-openapi.yaml#createNotification
+      type: rest
+    - name: print
+      operation: sysout
+      type: custom
+    start:
+      stateName: Notify Backstage
+    states:
+    - actionMode: sequential
+      actions:
+      - actionDataFilter:
+          useResults: true
+        functionRef:
+          arguments:
+            message: '"A simple notification of the workflow Application onboarding
+              with ID " + $WORKFLOW.instanceId + " working with JIRA" + .jiraInfo.projectKey'
+            origin: SonataFlow
+            targetUsers:
+            - default/guest
+            title: A simple notification
+            topic: Application onboarding workflow
+          invoke: sync
+          refName: createNotification
+        name: Create notification
+      name: Notify Backstage
+      transition:
+        nextState: Open issue on JIRA
+      type: operation
+    - actionMode: sequential
+      actions:
+      - actionDataFilter:
+          toStateData: .jiraCreateIssueResult
+          useResults: true
+        functionRef:
+          arguments:
+            fields:
+              assignee:
+                name: .jiraInfo.assignee
+              description: '"Please create a new Github Repository: https://github.com/parodos-dev/application-onboarding
+                \n Go to https://github.com/new"'
+              issuetype:
+                name: Task
+              labels:
+              - backstage-workflow
+              - '"workflowId=" + $WORKFLOW.instanceId'
+              priority:
+                name: High
+              project:
+                key: .jiraInfo.projectKey
+              reporter:
+                name: .jiraInfo.reporter
+              summary: New Repository for Application onboarding project on Backstage
+          invoke: sync
+          refName: jiraCreateIssue
+        name: callbackAction
+      name: Open issue on JIRA
+      transition:
+        nextState: 'Notify Backstage: JIRA ticket created'
+      type: operation
+    - actionMode: sequential
+      actions:
+      - actionDataFilter:
+          useResults: true
+        functionRef:
+          arguments:
+            actions:
+            - title: View on JIRA
+              url: $SECRET.jira_url + "/jira/servicedesk/projects/" + .jiraInfo.projectKey
+                + "/issues/" + .jiraCreateIssueResult.key
+            message: JIRA ticket created
+            origin: SonataFlow
+            targetUsers:
+            - default/guest
+            title: JIRA ticket created
+            topic: Application onboarding workflow
+          invoke: sync
+          refName: createNotification
+        name: 'Create notification: JIRA ticket created'
+      name: 'Notify Backstage: JIRA ticket created'
+      transition:
+        nextState: Wait for event from JIRA
+      type: operation
+    - action:
+        actionDataFilter:
+          useResults: true
+        functionRef:
+          arguments:
+            message: Waiting for event
+          invoke: sync
+          refName: print
+        name: Print waiting for event
+      compensatedBy: Close issue on JIRA due to Timeout
+      eventDataFilter:
+        toStateData: .jiraResolveIssueResult
+        useData: true
+      eventRef: callbackEvent
+      name: Wait for event from JIRA
+      timeouts:
+        eventTimeout: PT60S
+      transition:
+        nextState: Check repository created
+      type: callback
+    - dataConditions:
+      - condition: .jiraResolveIssueResult != null
+        name: Created
+        transition:
+          nextState: PrintJiraIssueSolved
+      - condition: .jiraResolveIssueResult == null
+        name: Not created
+        transition:
+          nextState: Wait for event from JIRA
+      defaultCondition:
+        transition:
+          compensate: true
+          nextState: Wait for event from JIRA
+      name: Check repository created
+      type: switch
+    - branches:
+      - actions:
+        - actionDataFilter:
+            useResults: true
+          functionRef:
+            arguments:
+              message: 'Jira issue closed: $SECRET.jira_url + "/jira/servicedesk/projects/"
+                + .jiraInfo.projectKey + "/issues/" + .jiraCreateIssueResult.key'
+            invoke: sync
+            refName: print
+          name: printSystemOut
+        name: printSystemOut
+      - actions:
+        - actionDataFilter:
+            useResults: true
+          functionRef:
+            arguments:
+              actions:
+              - title: View on JIRA
+                url: $SECRET.jira_url + "/jira/servicedesk/projects/" + .jiraInfo.projectKey
+                  + "/issues/" + .jiraCreateIssueResult.key
+              message: 'JIRA ticket closed '
+              origin: SonataFlow
+              targetUsers:
+              - default/guest
+              title: JIRA ticket closed
+              topic: Application onboarding workflow
+            invoke: sync
+            refName: createNotification
+          name: 'Create notification: JIRA ticket closed'
+        name: 'Create notification: JIRA ticket closed'
+      completionType: allOf
+      end:
+        terminate: true
+      name: PrintJiraIssueSolved
+      numCompleted: 0
+      type: parallel
+    - actionMode: sequential
+      actions:
+      - actionDataFilter:
+          toStateData: .jiraGetTransitionResult
+          useResults: true
+        functionRef:
+          arguments:
+            issueIdOrKey: .jiraCreateIssueResult.id
+          invoke: sync
+          refName: jiraGetIssueTransitions
+        name: get transition id
+      - actionDataFilter:
+          toStateData: .jiraCloseIssueResult
+          useResults: true
+        functionRef:
+          arguments:
+            issueIdOrKey: .jiraCreateIssueResult.id
+            transition:
+              id: .jiraGetTransitionResult.transitions[] | select(.name | contains("Close"))
+                | .id
+            update:
+              comment:
+              - add:
+                  body: Issue closed due to time out on Backstage workflow
+          invoke: sync
+          refName: jiraCloseIssue
+        name: Close issue on JIRA due to Timeout
+      name: Close issue on JIRA due to Timeout
+      transition:
+        nextState: 'Notify Backstage: JIRA ticket closed'
+      type: operation
+      usedForCompensation: true
+    - actionMode: sequential
+      actions:
+      - actionDataFilter:
+          useResults: true
+        functionRef:
+          arguments:
+            actions:
+            - title: View on JIRA
+              url: $SECRET.jira_url + "/jira/servicedesk/projects/" + .jiraInfo.projectKey
+                + "/issues/" + .jiraCreateIssueResult.key
+            message: JIRA ticket closed due to time out on Backstage workflow
+            origin: SonataFlow
+            targetUsers:
+            - default/guest
+            title: JIRA ticket closed due to time out
+            topic: Application onboarding workflow
+          invoke: sync
+          refName: createNotification
+        name: 'Create notification: JIRA ticket closed'
+      end:
+        terminate: true
+      name: 'Notify Backstage: JIRA ticket closed'
+      type: operation
+      usedForCompensation: true
+  podTemplate:
+    container:
+      resources: {}
+  resources:
+    configMaps:
+    - configMap:
+        name: 01-application-onboarding-resources
+      workflowPath: specs
+status:
+  address: {}
+  lastTimeRecoverAttempt: null
