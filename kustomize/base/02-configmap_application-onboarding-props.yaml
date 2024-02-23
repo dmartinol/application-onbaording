@@ -1,0 +1,21 @@
+apiVersion: v1
+data:
+  application.properties: |-
+    quarkus.rest-client.notifications_openapi_yaml.url=${BACKSTAGE_NOTIFICATIONS_URL:https://backstage-backstage-backstage-system.apps.cluster-mmbl5.dynamic.redhatworkshops.io/api/notifications}
+
+    jira_url=${JIRA_URL:https://redhat-gfarache.atlassian.net/}
+    quarkus.rest-client.jira_openapi_json.url=https://redhat-gfarache.atlassian.net
+    quarkus.openapi-generator.jira_openapi_json.auth.basicAuth.username=${JIRA_USERNAME}
+    # See https://id.atlassian.com/manage-profile/security/api-tokens
+    quarkus.openapi-generator.jira_openapi_json.auth.basicAuth.password=${JIRA_API_TOKEN}
+    #quarkus.openapi-generator.jira_openapi_json.auth.bearerAuth.bearer-token=${JIRA_BEARER_TOKEN:no-token}
+
+
+    #quarkus.log.category.\"org.apache.http\".level=DEBUG
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  labels:
+    app: application-onboarding
+    sonataflow.org/workflow-app: application-onboarding
+  name: application-onboarding-props
